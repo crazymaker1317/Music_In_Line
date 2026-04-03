@@ -5,7 +5,7 @@ app.py — Music In Line Gradio 웹 애플리케이션 메인 진입점
 선택한 박자에 맞는 음악(MIDI)을 생성합니다.
 """
 
-import json
+import os
 import tempfile
 import numpy as np
 import gradio as gr
@@ -14,7 +14,8 @@ from core.line_simplifier import simplify_line, enforce_left_to_right
 from core.pitch_mapper import map_y_to_pitch
 from core.note_arranger import arrange_notes, notes_to_text
 from core.midi_generator import generate_midi
-from utils.visualization import plot_line_comparison
+from utils.visualization import plot_line_comparison, plot_piano_roll
+from utils.audio_synth import synthesize_wav
 
 
 # ── 상수 ──────────────────────────────────────────────
@@ -27,53 +28,70 @@ def _extract_points_from_sketchpad(sketch_data):
     """
     Gradio Sketchpad 데이터에서 좌표 리스트를 추출합니다.
 
-    Sketchpad는 여러 형태의 데이터를 반환할 수 있습니다:
-    - dict with 'composite' key (이미지 데이터)
-    - numpy array (이미지)
-    - dict with 'layers' key
+    Sketchpad는 dict를 반환합니다:
+    - 'background': 배경 이미지
+    - 'layers': 그림 레이어 리스트 (각 레이어는 투명 배경 위 그림)
+    - 'composite': 합성된 최종 이미지
 
-    이미지 데이터에서는 그려진 선의 좌표를 추출합니다.
+    레이어 데이터에서 그려진 선의 좌표를 추출합니다.
     """
     if sketch_data is None:
         return []
 
-    # Sketchpad가 이미지(numpy array 또는 dict)를 반환하는 경우
     img = None
+
     if isinstance(sketch_data, dict):
-        if "composite" in sketch_data:
-            img = sketch_data["composite"]
-        elif "layers" in sketch_data and sketch_data["layers"]:
-            img = sketch_data["layers"][-1]
+        # 레이어에서 그려진 부분 추출 (투명 배경 위 그림)
+        if "layers" in sketch_data and sketch_data["layers"]:
+            layers = sketch_data["layers"]
+            # 모든 레이어를 합산하여 그려진 부분 감지
+            for layer in layers:
+                if isinstance(layer, np.ndarray) and layer.size > 0:
+                    img = layer
+                    break
+        # 레이어에서 찾지 못하면 composite 사용
+        if img is None and "composite" in sketch_data:
+            composite = sketch_data["composite"]
+            if isinstance(composite, np.ndarray):
+                img = composite
     elif isinstance(sketch_data, np.ndarray):
         img = sketch_data
 
-    if img is None:
+    if img is None or not isinstance(img, np.ndarray):
         return []
 
-    if isinstance(img, np.ndarray):
-        return _extract_points_from_image(img)
-
-    return []
+    return _extract_points_from_image(img)
 
 
 def _extract_points_from_image(img):
     """
     이미지 배열에서 그려진 선의 좌표를 추출합니다.
-    검은색이 아닌 픽셀을 찾아 좌표로 변환합니다.
+    레이어 이미지(투명 배경)에서는 알파 채널로,
+    합성 이미지에서는 어두운 픽셀(브러시가 검정색)로 감지합니다.
     """
     if img is None or img.size == 0:
         return []
 
-    # RGBA 또는 RGB 이미지에서 그려진 부분 감지
     if len(img.shape) == 3:
         if img.shape[2] == 4:
-            # RGBA: 알파 채널이 0이 아닌 부분 또는 RGB 채널 합이 큰 부분
-            mask = img[:, :, 3] > 10
+            # RGBA: 알파 채널로 그려진 부분 감지 (레이어는 투명 배경)
+            alpha_mask = img[:, :, 3] > 10
+            # RGB 채널로 어두운 부분도 감지 (합성 이미지의 검정 브러시)
+            dark_mask = np.all(img[:, :, :3] < 50, axis=2)
+            # 둘 다 확인하여 결합
+            # 알파가 있고 불투명한 부분 중 어두운 것, 또는 알파가 있는 레이어 부분
+            # 전략: 배경이 투명(alpha==0)인 이미지면 alpha만 사용
+            bg_transparent = np.mean(img[:, :, 3] == 0) > 0.5
+            if bg_transparent:
+                mask = alpha_mask
+            else:
+                # 합성 이미지: 어두운 픽셀 감지 (검정 브러시)
+                mask = dark_mask & (img[:, :, 3] > 200)
         else:
-            # RGB: 검은색(배경)이 아닌 부분
-            mask = np.any(img[:, :, :3] > 10, axis=2)
+            # RGB: 어두운 부분이 그려진 선 (검정 브러시)
+            mask = np.all(img[:, :, :3] < 50, axis=2)
     elif len(img.shape) == 2:
-        mask = img > 10
+        mask = img < 50  # 어두운 부분
     else:
         return []
 
@@ -82,14 +100,10 @@ def _extract_points_from_image(img):
     if len(xs) == 0:
         return []
 
-    # X좌표 기준으로 정렬하고 각 X에서 평균 Y 계산
-    coords = list(zip(xs.tolist(), ys.tolist()))
-    coords.sort(key=lambda c: c[0])
-
     # X좌표별로 그룹화하여 평균 Y 계산 (노이즈 감소)
     from collections import defaultdict
     x_groups = defaultdict(list)
-    for x, y in coords:
+    for x, y in zip(xs.tolist(), ys.tolist()):
         x_groups[x].append(y)
 
     points = []
@@ -127,12 +141,19 @@ def convert_line(sketch_data, epsilon):
     if not raw_points or len(raw_points) < 2:
         return (
             None,  # 시각화
-            "선을 그려주세요! 왼쪽에서 오른쪽으로 선을 그린 후 변환 버튼을 누르세요.",
+            "⚠️ 선을 그려주세요! 왼쪽에서 오른쪽으로 선을 그린 후 변환 버튼을 누르세요.",
             []  # state
         )
 
-    # 좌→우 방향 보정
+    # 좌→우 방향 보정 (역방향 포인트 제거)
     points = enforce_left_to_right(raw_points)
+
+    if len(points) < 2:
+        return (
+            None,
+            "⚠️ 유효한 포인트가 부족합니다. 왼쪽에서 오른쪽 방향으로 다시 그려주세요.",
+            []
+        )
 
     # RDP 알고리즘으로 단순화
     simplified = simplify_line(points, epsilon)
@@ -144,7 +165,7 @@ def convert_line(sketch_data, epsilon):
         canvas_height=CANVAS_HEIGHT
     )
 
-    status = f"원본 포인트: {len(points)}개 → 단순화: {len(simplified)}개"
+    status = f"✅ 원본 포인트: {len(points)}개 → 단순화: {len(simplified)}개"
 
     return fig, status, simplified
 
@@ -152,11 +173,11 @@ def convert_line(sketch_data, epsilon):
 def generate_music(simplified_state, time_sig_str, num_measures, bpm):
     """
     음악 생성하기 버튼 콜백:
-    저장된 2차 데이터에서 음표를 배열하고 MIDI 파일을 생성합니다.
+    저장된 단순화 데이터에서 음표를 배열하고 MIDI/WAV 파일을 생성합니다.
     """
     simplified = simplified_state
     if not simplified or len(simplified) < 2:
-        return None, "먼저 선을 그리고 '선 변환하기' 버튼을 눌러주세요.", None
+        return None, "먼저 선을 그리고 '선 변환하기' 버튼을 눌러주세요.", None, None, None
 
     time_signature = _parse_time_signature(time_sig_str)
 
@@ -164,7 +185,7 @@ def generate_music(simplified_state, time_sig_str, num_measures, bpm):
     xs = [p[0] for p in simplified]
     ys = [p[1] for p in simplified]
     canvas_w = max(xs) - min(xs) if max(xs) > min(xs) else CANVAS_WIDTH
-    canvas_h = max(ys) - min(ys) if max(ys) > min(ys) else CANVAS_HEIGHT
+    canvas_h = CANVAS_HEIGHT  # 항상 고정 캔버스 높이 사용
 
     # X좌표를 0 기준으로 보정
     min_x = min(xs)
@@ -176,27 +197,39 @@ def generate_music(simplified_state, time_sig_str, num_measures, bpm):
         canvas_width=canvas_w,
         canvas_height=canvas_h,
         time_signature=time_signature,
-        num_measures=num_measures
+        num_measures=int(num_measures)
     )
 
     if not notes:
-        return None, "음표를 생성할 수 없습니다. 더 길거나 복잡한 선을 그려보세요.", None
+        return None, "음표를 생성할 수 없습니다. 더 길거나 복잡한 선을 그려보세요.", None, None, None
 
     # 음표 텍스트 정보
     note_text = notes_to_text(notes)
 
+    # 피아노 롤 시각화
+    piano_roll_fig = plot_piano_roll(notes, time_signature, int(num_measures))
+
     # MIDI 파일 생성 (보안을 위해 mkstemp 사용)
     fd, midi_path = tempfile.mkstemp(suffix=".mid")
-    import os
     os.close(fd)
     generate_midi(
         notes,
-        bpm=bpm,
+        bpm=int(bpm),
         time_signature=time_signature,
         output_path=midi_path
     )
 
-    return midi_path, note_text, midi_path
+    # WAV 파일 생성 (브라우저 재생용)
+    fd2, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd2)
+    synthesize_wav(
+        notes,
+        bpm=int(bpm),
+        time_signature=time_signature,
+        output_path=wav_path
+    )
+
+    return midi_path, note_text, piano_roll_fig, wav_path, midi_path
 
 
 # ── Gradio UI 구성 ────────────────────────────────────
@@ -211,19 +244,24 @@ def create_app():
         gr.Markdown("# 🎼 Music In Line — 프로토타입")
         gr.Markdown("**내가 그린 선이 음악이 되는 마법!** 캔버스에 선을 그리면 음악(MIDI)으로 변환됩니다.")
 
-        # 상태 저장 (2차 데이터)
+        # 상태 저장 (단순화된 데이터)
         simplified_state = gr.State([])
 
         # ── Step 1: 선 그리기 ──
         gr.Markdown("## 🎨 Step 1: 선 그리기")
         gr.Markdown("왼쪽에서 오른쪽으로 자유롭게 선을 그려보세요! "
-                     "가로축 = 시간(마디), 세로축 = 음높이(위: 높은 음, 아래: 낮은 음)")
+                     "가로축 = 시간(마디), 세로축 = 음높이(위: 높은 음, 아래: 낮은 음)\n\n"
+                     "> 💡 **역방향(오른쪽→왼쪽) 포인트는 자동으로 제거**됩니다.")
 
         sketchpad = gr.Sketchpad(
             label="선 그리기 캔버스",
-            width=CANVAS_WIDTH,
-            height=CANVAS_HEIGHT,
-            type="numpy"
+            canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
+            height=CANVAS_HEIGHT + 100,
+            width=CANVAS_WIDTH + 50,
+            type="numpy",
+            brush=gr.Brush(colors=["#000000"], color_mode="fixed",
+                           default_size=3),
+            layers=False,
         )
 
         # ── Step 2: 선 변환 ──
@@ -259,12 +297,19 @@ def create_app():
         generate_btn = gr.Button("🎵 음악 생성하기", variant="primary", size="lg")
 
         gr.Markdown("## 🎼 결과")
+
+        # 피아노 롤 시각화
+        piano_roll_output = gr.Plot(label="🎵 음표 배치 (피아노 롤)")
+
+        # 오디오 재생
+        audio_output = gr.Audio(label="🔊 음악 미리 듣기", type="filepath")
+
         note_text_output = gr.Textbox(
             label="📝 음표 텍스트 정보",
             lines=10,
             interactive=False
         )
-        midi_download = gr.File(label="🔊 MIDI 파일 다운로드")
+        midi_download = gr.File(label="💾 MIDI 파일 다운로드")
 
         # ── 이벤트 바인딩 ──
 
@@ -280,7 +325,8 @@ def create_app():
             fn=generate_music,
             inputs=[simplified_state, time_sig_dropdown,
                     num_measures_slider, bpm_slider],
-            outputs=[midi_download, note_text_output, midi_download]
+            outputs=[midi_download, note_text_output, piano_roll_output,
+                     audio_output, midi_download]
         )
 
     return app

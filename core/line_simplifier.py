@@ -82,7 +82,7 @@ def simplify_line(points: list[tuple[float, float]],
 def enforce_left_to_right(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """
     좌표 리스트에서 X좌표가 단조 증가하도록 필터링합니다.
-    X가 이전 포인트보다 작아지는 입력은 이전 X좌표를 유지합니다.
+    X가 이전 포인트보다 작거나 같은 입력은 제거합니다.
 
     Args:
         points: 원시 좌표 리스트
@@ -99,8 +99,6 @@ def enforce_left_to_right(points: list[tuple[float, float]]) -> list[tuple[float
         prev_x = result[-1][0]
         if x > prev_x:
             result.append((x, y))
-        else:
-            # X가 감소하면 이전 X좌표를 유지하되 Y는 업데이트
-            result.append((prev_x, y))
+        # X가 감소하거나 같으면 해당 포인트를 무시 (역방향 제거)
 
     return result
