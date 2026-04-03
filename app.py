@@ -185,8 +185,10 @@ def generate_music(simplified_state, time_sig_str, num_measures, bpm):
     # 음표 텍스트 정보
     note_text = notes_to_text(notes)
 
-    # MIDI 파일 생성
-    midi_path = tempfile.mktemp(suffix=".mid")
+    # MIDI 파일 생성 (보안을 위해 mkstemp 사용)
+    fd, midi_path = tempfile.mkstemp(suffix=".mid")
+    import os
+    os.close(fd)
     generate_midi(
         notes,
         bpm=bpm,
