@@ -171,7 +171,7 @@ def plot_piano_roll(notes, time_signature=(4, 4), num_measures=4):
     y_ticks = list(range(pitch_min, pitch_max + 1))
     y_labels = []
     for p in y_ticks:
-        if p % 12 in [0, 2, 4, 5, 7, 9, 11]:  # C major scale notes
+        if p % 12 in [0, 2, 4, 5, 7, 9, 11]:  # Natural notes (white keys)
             y_labels.append(pitch_to_note_name(p))
         else:
             y_labels.append('')

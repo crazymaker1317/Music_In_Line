@@ -260,7 +260,7 @@ def create_app():
             width=CANVAS_WIDTH + 50,
             type="numpy",
             brush=gr.Brush(colors=["#000000"], color_mode="fixed",
-                           default_size=3),
+                           default_size=5),
             layers=False,
         )
 
