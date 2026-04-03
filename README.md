@@ -134,6 +134,13 @@ Music_In_Line/
 
 ---
 
+## 📘 상세 가이드 문서
+
+Windows 환경에서의 설치부터 실행·테스트까지 전체 과정을 단계별로 안내하는 상세 가이드:
+→ **[docs/guide_ko.md](docs/guide_ko.md)**
+
+---
+
 ## 📋 향후 작업
 
 자세한 내용은 [TODO.md](TODO.md)를 참조하세요.
