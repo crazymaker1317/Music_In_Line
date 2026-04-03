@@ -75,12 +75,12 @@ class TestEnforceLeftToRight:
         assert result == points
 
     def test_backward_movement(self):
-        """X가 감소하는 포인트 처리"""
+        """X가 감소하는 포인트 처리 — 역방향 포인트가 제거됨"""
         points = [(0, 10), (50, 20), (30, 30), (80, 40)]
         result = enforce_left_to_right(points)
-        # (30, 30)의 X좌표가 50으로 유지되어야 함
-        assert result[2][0] == 50
-        assert result[2][1] == 30
+        # (30, 30)은 역방향이므로 제거되어야 함
+        assert len(result) == 3
+        assert result == [(0, 10), (50, 20), (80, 40)]
 
     def test_single_point(self):
         """포인트 하나"""

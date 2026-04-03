@@ -280,9 +280,11 @@ To create a public link, set `share=True` in `launch()`.
 ### Step 4: 음악 생성하기 🎵
 
 1. **"🎵 음악 생성하기"** 버튼을 클릭합니다.
-2. 하단에 두 가지 결과가 표시됩니다:
+2. 하단에 결과가 표시됩니다:
+   - **🎵 음표 배치 (피아노 롤)**: 마디별 음표가 시각적으로 표시됩니다.
+   - **🔊 음악 미리 듣기**: 생성된 음악을 브라우저에서 바로 재생할 수 있습니다.
    - **📝 음표 텍스트 정보**: 마디별 음표 이름, 종류, 시작 위치가 표시됩니다.
-   - **🔊 MIDI 파일 다운로드**: 생성된 MIDI 파일을 다운로드할 수 있습니다.
+   - **💾 MIDI 파일 다운로드**: 생성된 MIDI 파일을 다운로드할 수 있습니다.
 
 ### Step 5: 박자 변경하여 재생성 🔄
 
@@ -416,14 +418,34 @@ pip install -r requirements.txt
 app.launch(server_port=7861)
 ```
 
-### Q6. MIDI 파일을 재생하려면 어떻게 하나요?
+### Q6. 시각화 그래프에서 한글이 깨집니다 (□ 표시)
+
+**원인**: matplotlib에서 한글 폰트를 찾지 못하는 경우 발생합니다.
+
+**해결 (Windows)**: 대부분의 Windows에는 '맑은 고딕(Malgun Gothic)' 폰트가 설치되어 있어 자동으로 감지됩니다. 그래도 깨지면 matplotlib 폰트 캐시를 초기화하세요:
+```powershell
+python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir()); print('캐시 삭제 완료')"
+```
+
+**해결 (Linux/macOS)**: 나눔고딕 폰트를 설치하세요:
+```bash
+# Ubuntu/Debian
+sudo apt install fonts-nanum
+
+# macOS (Homebrew)
+brew install font-nanum-gothic
+```
+
+> 💡 한글 폰트가 없는 환경에서는 자동으로 영문 라벨로 전환됩니다.
+
+### Q7. MIDI 파일을 재생하려면 어떻게 하나요?
 
 다운로드한 `.mid` 파일을 다음 방법으로 재생할 수 있습니다:
 - **Windows Media Player**: 파일을 더블클릭하여 재생
 - **온라인 재생기**: [signal.vercel.app/edit](https://signal.vercel.app/edit) 등의 웹 MIDI 재생기에 파일을 업로드
 - **MuseScore**: 무료 악보 소프트웨어로 악보 확인 및 재생 가능
 
-### Q7. 테스트가 실패합니다
+### Q8. 테스트가 실패합니다
 
 **해결**: 의존성이 올바르게 설치되었는지 확인하세요:
 ```powershell
@@ -456,7 +478,8 @@ Music_In_Line/
 │   └── midi_generator.py       # 음표 → MIDI 파일 생성
 ├── utils/                      # 유틸리티
 │   ├── __init__.py
-│   └── visualization.py        # matplotlib 시각화
+│   ├── visualization.py        # matplotlib 시각화 (선 비교, 피아노 롤)
+│   └── audio_synth.py          # 사인파 오디오 합성 (WAV 생성)
 ├── tests/                      # 단위 테스트 (32개)
 │   ├── test_line_simplifier.py # 선 단순화 테스트 (11개)
 │   ├── test_pitch_mapper.py    # 음높이 매핑 테스트 (12개)
