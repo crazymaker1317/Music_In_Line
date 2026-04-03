@@ -173,11 +173,20 @@ def _fix_measure_duration(notes, measure_idx, beats_per_measure):
         # 마지막 음표의 duration을 조정
         last_note = measure_notes[-1]
         new_dur = last_note.duration + diff
-        if new_dur > 0:
+        if new_dur >= 0.125:
             last_note.duration = new_dur
+        elif len(measure_notes) > 1:
+            # 마지막 음표가 너무 짧아지면 제거하고 그 이전 음표를 늘림
+            notes.remove(last_note)
+            prev_note = measure_notes[-2]
+            # 이전 음표의 duration을 조정하여 마디를 채움
+            recalc_total = sum(
+                n.duration for n in notes if n.measure == measure_idx
+            )
+            prev_note.duration += (beats_per_measure - recalc_total)
         else:
-            # 마지막 음표를 최소 길이로 설정하고 나머지를 균등 감소
-            last_note.duration = 0.25
+            # 음표가 하나뿐이면 최소값으로 설정
+            last_note.duration = max(new_dur, 0.25)
 
 
 def arrange_notes(simplified_points, canvas_width, canvas_height,
@@ -242,11 +251,25 @@ def arrange_notes(simplified_points, canvas_width, canvas_height,
         # 정규화하여 마디 총 박자에 맞춤
         normalized = _normalize_durations(raw_durations, beats_per_measure)
 
-        # 각 음표 배치
+        # 각 음표 배치 — 마디 경계를 넘지 않도록 클리핑
         current_beat = 0.0
         for i, dur in enumerate(normalized):
+            # 마디 경계를 이미 넘었으면 더 이상 음표를 추가하지 않음
+            if current_beat >= beats_per_measure:
+                break
+
             pitch = map_y_to_pitch(key_points[i][1], canvas_height)
             quantized_dur = _quantize_duration(dur)
+
+            # 음표가 마디 경계를 넘지 않도록 클리핑
+            remaining = beats_per_measure - current_beat
+            if quantized_dur > remaining:
+                quantized_dur = remaining
+
+            # 너무 짧은 음표(0에 가까운)는 건너뛰기
+            if quantized_dur < 0.125:
+                continue
+
             all_notes.append(Note(
                 pitch=pitch,
                 start_beat=current_beat,
