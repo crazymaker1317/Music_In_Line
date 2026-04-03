@@ -36,7 +36,7 @@ def midi_to_wav(
     pm: pretty_midi.PrettyMIDI,
     sample_rate: int = 22050,
 ) -> np.ndarray:
-    """Synthesise a PrettyMIDI object to a WAV-compatible numpy array using sine waves."""
+    """Synthesize a PrettyMIDI object to a WAV-compatible numpy array using sine waves."""
     audio = pm.synthesize(fs=sample_rate)
     # Normalize to [-1, 1]
     peak = np.max(np.abs(audio))
