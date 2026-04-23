@@ -13,6 +13,14 @@ beat_grid_sampler.py — Baet-grid 샘플링 기반 음표 배열 모듈
   그 셀의 음높이 정수값(1~13)으로 사용합니다.
 - 연속된 셀이 동일한 정수값을 가지면 하나의 음표로 병합합니다.
 - 한 셀 안의 점 개수가 임계값(기본 2) 이하이면 그 셀은 쉼표로 처리합니다.
+
+예외 사항 처리 (복잡한 그림 지원):
+- 한 간격(셀) 안에 같은 x값을 지닌 점이 여러 개 있는 경우, 가장 먼저 등장한
+  점 하나만을 인식합니다. (입력 순서 기준)
+- 학생이 선을 그리다가 방향을 바꿔 이미 지나온 x값으로 되돌아가는 경우
+  (예: 좌우로 뒤집힌 C 모양), 꺾이기 직전까지의 점들만 인식하고 이후의
+  되돌아오는 점들은 모두 무시합니다. 기준은 "이미 지나온 x값을 다시 지나가는가"
+  입니다.
 """
 
 from core.note_arranger import Note
@@ -83,16 +91,36 @@ def sample_beat_grid(points, canvas_width, canvas_height,
     cell_width = canvas_width / total_cells
 
     # 각 셀에 속한 점들의 Y 값을 수집
+    # 예외 사항 처리:
+    #   (1) 한 셀(간격) 안에 같은 x값을 지닌 점이 여러 개면 가장 먼저 나온
+    #       점 하나만 인식한다. (셀 내 `seen_x_in_cell` 로 추적)
+    #   (2) 학생이 방향을 바꿔 이미 지나온 x값으로 되돌아가면 (좌우 반전
+    #       C 모양 등) 그 이후 점은 모두 무시한다. (`max_x_so_far` 로 추적)
     cell_y_values: list[list[float]] = [[] for _ in range(total_cells)]
+    max_x_so_far = float("-inf")
+    last_cell_idx = -1
+    seen_x_in_cell: set[float] = set()
     for x, y in points:
         if x < 0 or x > canvas_width:
+            continue
+        # (2) 이미 지나온 X값 이하로 돌아오면 무시 (역방향 포인트 제거)
+        if x <= max_x_so_far:
             continue
         cell_idx = int(x / cell_width) if cell_width > 0 else 0
         if cell_idx >= total_cells:
             cell_idx = total_cells - 1
         if cell_idx < 0:
             cell_idx = 0
+        # 새 셀로 진입하면 중복 X 추적 집합 초기화
+        if cell_idx != last_cell_idx:
+            seen_x_in_cell = set()
+            last_cell_idx = cell_idx
+        # (1) 같은 셀 안에 같은 x값이 이미 있으면 먼저 찍힌 점만 유지
+        if x in seen_x_in_cell:
+            continue
+        seen_x_in_cell.add(x)
         cell_y_values[cell_idx].append(y)
+        max_x_so_far = x
 
     # 각 셀의 음높이 정수값 (또는 None = 쉼표) 산출
     cell_pitches: list[int | None] = []
