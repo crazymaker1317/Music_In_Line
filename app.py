@@ -13,14 +13,29 @@ import gradio as gr
 from core.line_simplifier import simplify_line, enforce_left_to_right
 from core.pitch_mapper import map_y_to_pitch
 from core.note_arranger import arrange_notes, notes_to_text
+from core.beat_grid_sampler import (
+    sample_beat_grid,
+    beat_grid_summary,
+    DEFAULT_CELLS_PER_MEASURE,
+)
 from core.midi_generator import generate_midi
-from utils.visualization import plot_line_comparison, plot_piano_roll
+from utils.visualization import (
+    plot_line_comparison, plot_piano_roll, plot_beat_grid,
+)
 from utils.audio_synth import synthesize_wav
 
 
 # ── 상수 ──────────────────────────────────────────────
 CANVAS_WIDTH = 800
 CANVAS_HEIGHT = 400
+
+# Baet-grid 샘플링은 개념 증명 단계이므로 4/4 박자 4마디로 고정
+BEAT_GRID_NUM_MEASURES = 4
+BEAT_GRID_TIME_SIGNATURE = (4, 4)
+
+# 모드 식별자
+MODE_RDP = "RDP (기존 방식)"
+MODE_BEAT_GRID = "Baet-grid sampling (신규 방식)"
 
 
 # ── 헬퍼 함수 ────────────────────────────────────────
@@ -131,18 +146,24 @@ def _parse_time_signature(ts_str):
 
 # ── 메인 콜백 함수들 ─────────────────────────────────
 
-def convert_line(sketch_data, epsilon):
+def convert_line(sketch_data, epsilon, mode):
     """
     선 변환하기 버튼 콜백:
-    스케치패드에서 원본 좌표를 추출하고 RDP 알고리즘으로 단순화합니다.
+    - RDP 모드: 스케치패드에서 좌표를 추출하고 RDP 알고리즘으로 단순화합니다.
+    - Baet-grid 모드: 스케치패드에서 좌표를 추출하고 64개 비트 칸으로
+      샘플링하여 음표를 직접 생성합니다.
+
+    반환값 튜플:
+        (선 비교 시각화, Baet-grid 시각화, 상태 메시지,
+         RDP 단순화 결과, Baet-grid 음표 결과)
     """
     # 좌표 추출
     raw_points = _extract_points_from_sketchpad(sketch_data)
     if not raw_points or len(raw_points) < 2:
         return (
-            None,  # 시각화
+            None, None,
             "⚠️ 선을 그려주세요! 왼쪽에서 오른쪽으로 선을 그린 후 변환 버튼을 누르세요.",
-            []  # state
+            [], []
         )
 
     # 좌→우 방향 보정 (역방향 포인트 제거)
@@ -150,15 +171,50 @@ def convert_line(sketch_data, epsilon):
 
     if len(points) < 2:
         return (
-            None,
+            None, None,
             "⚠️ 유효한 포인트가 부족합니다. 왼쪽에서 오른쪽 방향으로 다시 그려주세요.",
-            []
+            [], []
         )
 
-    # RDP 알고리즘으로 단순화
+    if mode == MODE_BEAT_GRID:
+        # Baet-grid 샘플링: 점들을 64개 비트 칸에 분배하여 음표 생성
+        # 캔버스 좌표 정규화 (X가 0부터 시작하도록)
+        xs = [p[0] for p in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        canvas_w = max_x - min_x if max_x > min_x else CANVAS_WIDTH
+        adjusted = [(x - min_x, y) for x, y in points]
+
+        notes = sample_beat_grid(
+            adjusted,
+            canvas_width=canvas_w,
+            canvas_height=CANVAS_HEIGHT,
+            num_measures=BEAT_GRID_NUM_MEASURES,
+            time_signature=BEAT_GRID_TIME_SIGNATURE,
+            cells_per_measure=DEFAULT_CELLS_PER_MEASURE,
+        )
+
+        fig = plot_beat_grid(
+            adjusted, notes,
+            canvas_width=canvas_w,
+            canvas_height=CANVAS_HEIGHT,
+            num_measures=BEAT_GRID_NUM_MEASURES,
+            cells_per_measure=DEFAULT_CELLS_PER_MEASURE,
+        )
+
+        num_rest = sum(1 for n in notes if n.is_rest)
+        num_pitched = len(notes) - num_rest
+        status = (
+            f"✅ Baet-grid 샘플링 완료: "
+            f"{BEAT_GRID_NUM_MEASURES}마디 × {DEFAULT_CELLS_PER_MEASURE}셀 = "
+            f"{BEAT_GRID_NUM_MEASURES * DEFAULT_CELLS_PER_MEASURE}개 셀, "
+            f"음표 {num_pitched}개 / 쉼표 {num_rest}개 생성"
+        )
+        return None, fig, status, [], notes
+
+    # RDP 모드
     simplified = simplify_line(points, epsilon)
 
-    # 시각화
     fig = plot_line_comparison(
         points, simplified,
         canvas_width=CANVAS_WIDTH,
@@ -166,58 +222,78 @@ def convert_line(sketch_data, epsilon):
     )
 
     status = f"✅ 원본 포인트: {len(points)}개 → 단순화: {len(simplified)}개"
+    return fig, None, status, simplified, []
 
-    return fig, status, simplified
 
-
-def generate_music(simplified_state, time_sig_str, num_measures, bpm):
+def generate_music(simplified_state, beat_grid_notes_state, mode,
+                    time_sig_str, num_measures, bpm):
     """
     음악 생성하기 버튼 콜백:
-    저장된 단순화 데이터에서 음표를 배열하고 MIDI/WAV 파일을 생성합니다.
+    모드에 따라 저장된 상태에서 음표를 준비하고 MIDI/WAV 파일을 생성합니다.
     """
-    simplified = simplified_state
-    if not simplified or len(simplified) < 2:
-        return None, "먼저 선을 그리고 '선 변환하기' 버튼을 눌러주세요.", None, None, None
+    if mode == MODE_BEAT_GRID:
+        notes = beat_grid_notes_state
+        if not notes:
+            return (None,
+                    "먼저 선을 그리고 '선 변환하기' 버튼을 눌러주세요.",
+                    None, None, None)
+        # Baet-grid는 개념 증명용으로 4/4 4마디 고정
+        time_signature = BEAT_GRID_TIME_SIGNATURE
+        effective_measures = BEAT_GRID_NUM_MEASURES
+        note_text = beat_grid_summary(notes)
+    else:
+        # RDP 모드
+        simplified = simplified_state
+        if not simplified or len(simplified) < 2:
+            return (None,
+                    "먼저 선을 그리고 '선 변환하기' 버튼을 눌러주세요.",
+                    None, None, None)
 
-    time_signature = _parse_time_signature(time_sig_str)
+        time_signature = _parse_time_signature(time_sig_str)
+        effective_measures = int(num_measures)
 
-    # 캔버스 크기 결정 (단순화된 데이터의 실제 범위 사용)
-    xs = [p[0] for p in simplified]
-    ys = [p[1] for p in simplified]
-    canvas_w = max(xs) - min(xs) if max(xs) > min(xs) else CANVAS_WIDTH
-    canvas_h = CANVAS_HEIGHT  # 항상 고정 캔버스 높이 사용
+        # 캔버스 크기 결정 (단순화된 데이터의 실제 범위 사용)
+        xs = [p[0] for p in simplified]
+        canvas_w = max(xs) - min(xs) if max(xs) > min(xs) else CANVAS_WIDTH
+        canvas_h = CANVAS_HEIGHT  # 항상 고정 캔버스 높이 사용
 
-    # X좌표를 0 기준으로 보정
-    min_x = min(xs)
-    adjusted_points = [(x - min_x, y) for x, y in simplified]
+        # X좌표를 0 기준으로 보정
+        min_x = min(xs)
+        adjusted_points = [(x - min_x, y) for x, y in simplified]
 
-    # 음표 배열
-    notes = arrange_notes(
-        adjusted_points,
-        canvas_width=canvas_w,
-        canvas_height=canvas_h,
-        time_signature=time_signature,
-        num_measures=int(num_measures)
-    )
+        # 음표 배열
+        notes = arrange_notes(
+            adjusted_points,
+            canvas_width=canvas_w,
+            canvas_height=canvas_h,
+            time_signature=time_signature,
+            num_measures=effective_measures
+        )
 
-    if not notes:
-        return None, "음표를 생성할 수 없습니다. 더 길거나 복잡한 선을 그려보세요.", None, None, None
+        if not notes:
+            return (None,
+                    "음표를 생성할 수 없습니다. 더 길거나 복잡한 선을 그려보세요.",
+                    None, None, None)
 
-    # 음표 텍스트 정보
-    note_text = notes_to_text(notes)
+        note_text = notes_to_text(notes)
 
     # 피아노 롤 시각화
-    piano_roll_fig = plot_piano_roll(notes, time_signature, int(num_measures))
+    piano_roll_fig = plot_piano_roll(notes, time_signature, effective_measures)
 
     # MIDI 파일 생성 (보안을 위해 mkstemp 사용)
     fd, midi_path = tempfile.mkstemp(suffix=".mid")
     os.close(fd)
-    generate_midi(
-        notes,
-        bpm=int(bpm),
-        time_signature=time_signature,
-        output_path=midi_path
-    )
+    try:
+        generate_midi(
+            notes,
+            bpm=int(bpm),
+            time_signature=time_signature,
+            output_path=midi_path
+        )
+    except ValueError:
+        return (None,
+                "MIDI 생성 실패: 유효한 음표가 없습니다.",
+                piano_roll_fig, None, None)
 
     # WAV 파일 생성 (브라우저 재생용)
     fd2, wav_path = tempfile.mkstemp(suffix=".wav")
@@ -244,8 +320,27 @@ def create_app():
         gr.Markdown("# 🎼 Music In Line — 프로토타입")
         gr.Markdown("**내가 그린 선이 음악이 되는 마법!** 캔버스에 선을 그리면 음악(MIDI)으로 변환됩니다.")
 
-        # 상태 저장 (단순화된 데이터)
-        simplified_state = gr.State([])
+        # ── Step 0: 변환 방식 선택 ──
+        gr.Markdown("## 🧭 Step 0: 변환 방식 선택")
+        gr.Markdown(
+            "선을 음악으로 바꾸는 두 가지 방식 중 하나를 선택하세요.\n\n"
+            "- **RDP (기존 방식)**: 선을 단순화한 뒤 마디별로 음표를 배열합니다. "
+            "박자/마디 수를 자유롭게 설정할 수 있습니다.\n"
+            "- **Baet-grid sampling (신규 방식)**: 캔버스를 4마디 × 16셀 "
+            "(총 64개 비트 칸)로 나누고, 각 칸에 모인 점의 세로축 평균값을 "
+            "1~13의 음높이(도~높은 도)로 배정합니다. "
+            "(개념 증명 단계: **4/4 박자, 4마디 고정**)"
+        )
+        mode_radio = gr.Radio(
+            choices=[MODE_RDP, MODE_BEAT_GRID],
+            value=MODE_RDP,
+            label="변환 방식",
+            info="프로그램을 처음 켤 때 한 번만 선택하면 됩니다."
+        )
+
+        # 상태 저장
+        simplified_state = gr.State([])          # RDP 모드용 단순화 결과
+        beat_grid_notes_state = gr.State([])     # Baet-grid 모드용 음표 결과
 
         # ── Step 1: 선 그리기 ──
         gr.Markdown("## 🎨 Step 1: 선 그리기")
@@ -268,25 +363,31 @@ def create_app():
         with gr.Row():
             epsilon_slider = gr.Slider(
                 minimum=1, maximum=30, value=5, step=1,
-                label="단순화 정도 (epsilon)",
-                info="클수록 더 단순화됩니다"
+                label="단순화 정도 (epsilon) [RDP 전용]",
+                info="RDP 방식에서만 사용됩니다. 클수록 더 단순화됩니다."
             )
             convert_btn = gr.Button("📐 선 변환하기", variant="primary")
 
-        viz_output = gr.Plot(label="변환 결과 시각화")
+        viz_output = gr.Plot(label="RDP 변환 결과 시각화")
+        beat_grid_viz_output = gr.Plot(label="Baet-grid 샘플링 시각화",
+                                        visible=False)
         convert_status = gr.Textbox(label="변환 상태", interactive=False)
 
         # ── Step 3: 설정 ──
         gr.Markdown("## ⚙️ Step 2: 설정")
+        gr.Markdown(
+            "> Baet-grid sampling 방식을 선택한 경우 박자와 마디 수는 "
+            "개념 증명을 위해 **4/4 박자, 4마디로 고정**됩니다. BPM만 조절됩니다."
+        )
         with gr.Row():
             time_sig_dropdown = gr.Dropdown(
                 choices=["4/4", "3/4", "2/4"],
                 value="4/4",
-                label="박자 선택"
+                label="박자 선택 [RDP 전용]"
             )
             num_measures_slider = gr.Slider(
                 minimum=2, maximum=8, value=4, step=1,
-                label="마디 수"
+                label="마디 수 [RDP 전용]"
             )
             bpm_slider = gr.Slider(
                 minimum=60, maximum=180, value=120, step=1,
@@ -313,18 +414,37 @@ def create_app():
 
         # ── 이벤트 바인딩 ──
 
+        # 모드 변경 시 UI 가시성 업데이트
+        def _on_mode_change(mode):
+            is_beat_grid = (mode == MODE_BEAT_GRID)
+            return (
+                gr.update(visible=not is_beat_grid),   # viz_output (RDP)
+                gr.update(visible=is_beat_grid),        # beat_grid_viz_output
+                gr.update(interactive=not is_beat_grid),  # epsilon_slider
+                gr.update(interactive=not is_beat_grid),  # time_sig_dropdown
+                gr.update(interactive=not is_beat_grid),  # num_measures_slider
+            )
+
+        mode_radio.change(
+            fn=_on_mode_change,
+            inputs=[mode_radio],
+            outputs=[viz_output, beat_grid_viz_output, epsilon_slider,
+                     time_sig_dropdown, num_measures_slider],
+        )
+
         # 선 변환 버튼
         convert_btn.click(
             fn=convert_line,
-            inputs=[sketchpad, epsilon_slider],
-            outputs=[viz_output, convert_status, simplified_state]
+            inputs=[sketchpad, epsilon_slider, mode_radio],
+            outputs=[viz_output, beat_grid_viz_output, convert_status,
+                     simplified_state, beat_grid_notes_state]
         )
 
         # 음악 생성 버튼
         generate_btn.click(
             fn=generate_music,
-            inputs=[simplified_state, time_sig_dropdown,
-                    num_measures_slider, bpm_slider],
+            inputs=[simplified_state, beat_grid_notes_state, mode_radio,
+                    time_sig_dropdown, num_measures_slider, bpm_slider],
             outputs=[midi_download, note_text_output, piano_roll_output,
                      audio_output, midi_download]
         )

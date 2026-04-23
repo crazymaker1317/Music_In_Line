@@ -48,6 +48,9 @@ def synthesize_wav(notes, bpm=120, time_signature=(4, 4),
 
     # 각 음표를 사인파로 합성
     for note in notes:
+        # 쉼표는 합성하지 않음 (무음 구간)
+        if getattr(note, "is_rest", False):
+            continue
         abs_start_beat = note.measure * beats_per_measure + note.start_beat
         start_sec = abs_start_beat * seconds_per_beat
         duration_sec = note.duration * seconds_per_beat

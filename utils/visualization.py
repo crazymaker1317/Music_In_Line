@@ -129,10 +129,16 @@ def plot_piano_roll(notes, time_signature=(4, 4), num_measures=4):
     beats_per_measure = time_signature[0]
     total_beats = beats_per_measure * num_measures
 
-    # 피치 범위 계산
-    pitches = [n.pitch for n in notes]
-    pitch_min = min(pitches) - 2
-    pitch_max = max(pitches) + 2
+    # 피치 범위 계산 — 쉼표는 제외
+    pitched_notes = [n for n in notes if not getattr(n, "is_rest", False)]
+    if pitched_notes:
+        pitches = [n.pitch for n in pitched_notes]
+        pitch_min = min(pitches) - 2
+        pitch_max = max(pitches) + 2
+    else:
+        # 모든 음표가 쉼표인 경우 기본 범위 사용 (C4~C5 부근)
+        pitch_min = 58
+        pitch_max = 74
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))
 
@@ -149,10 +155,26 @@ def plot_piano_roll(notes, time_signature=(4, 4), num_measures=4):
     for i in range(total_beats + 1):
         ax.axvline(x=i, color='lightgray', linestyle='-', alpha=0.3)
 
-    # 음표를 사각형으로 표시
+    # 음표를 사각형으로 표시 (쉼표는 별도로 처리)
     colors = plt.cm.Set2(np.linspace(0, 1, num_measures))
+    rest_y = (pitch_min + pitch_max) / 2.0  # 쉼표 표시용 Y 위치
     for note in notes:
         abs_start = note.measure * beats_per_measure + note.start_beat
+        if getattr(note, "is_rest", False):
+            # 쉼표: 반투명 회색 해치 사각형 + '𝄽' 표기
+            rect = plt.Rectangle(
+                (abs_start, pitch_min + 0.2),
+                note.duration, pitch_max - pitch_min - 0.4,
+                facecolor='lightgray', edgecolor='gray',
+                linewidth=0.5, alpha=0.25, hatch='//'
+            )
+            ax.add_patch(rect)
+            if note.duration >= 0.25:
+                ax.text(abs_start + note.duration / 2, rest_y,
+                        _label('쉼표', 'rest'),
+                        ha='center', va='center', fontsize=7,
+                        color='dimgray', fontweight='bold')
+            continue
         color = colors[note.measure % len(colors)]
         rect = plt.Rectangle(
             (abs_start, note.pitch - 0.4),
@@ -184,6 +206,102 @@ def plot_piano_roll(notes, time_signature=(4, 4), num_measures=4):
                          f'Beat — {time_signature[0]}/{time_signature[1]} time'))
     ax.set_ylabel(_label('음높이', 'Pitch'))
     ax.set_title(_label('음표 배치 (피아노 롤)', 'Note Placement (Piano Roll)'))
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_beat_grid(points, notes, canvas_width=800, canvas_height=400,
+                   num_measures=4, cells_per_measure=16):
+    """
+    Baet-grid 샘플링 결과를 시각화합니다.
+    원본 그린 점과, 총 `num_measures * cells_per_measure`개의 비트 칸으로
+    구분된 그리드, 각 칸에 배정된 음높이 값을 함께 표시합니다.
+    """
+    from core.beat_grid_sampler import PITCH_VALUE_BASE_MIDI, PITCH_VALUE_NAMES_KR
+
+    total_cells = num_measures * cells_per_measure
+    fig, ax = plt.subplots(1, 1, figsize=(12, 5))
+
+    # 원본 포인트
+    if points:
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        ax.scatter(xs, ys, s=3, c='steelblue', alpha=0.5,
+                   label=_label('그린 점', 'drawn points'))
+
+    # 비트 칸 구분선
+    cell_width = canvas_width / total_cells
+    for c in range(total_cells + 1):
+        x = c * cell_width
+        if c % cells_per_measure == 0:
+            ax.axvline(x=x, color='gray', linestyle='-', alpha=0.6)
+        else:
+            ax.axvline(x=x, color='lightgray', linestyle=':', alpha=0.4)
+
+    # 마디 라벨
+    measure_width = canvas_width / num_measures
+    for i in range(num_measures):
+        label_text = _label(f'마디 {i + 1}', f'M{i + 1}')
+        ax.text(i * measure_width + measure_width / 2, canvas_height * 0.02,
+                label_text, ha='center', fontsize=9, color='gray')
+
+    # 각 셀의 배정된 음높이(또는 쉼표) 표시
+    cell_pitch_value = [None] * total_cells
+    beats_per_measure = 4  # Baet-grid은 4/4 전제
+    beat_per_cell = beats_per_measure / cells_per_measure
+    for note in notes:
+        measure_start_cell = note.measure * cells_per_measure
+        start_cell = measure_start_cell + int(round(note.start_beat / beat_per_cell))
+        num_cells_in_note = max(1, int(round(note.duration / beat_per_cell)))
+        for k in range(num_cells_in_note):
+            idx = start_cell + k
+            if 0 <= idx < total_cells:
+                if getattr(note, "is_rest", False):
+                    cell_pitch_value[idx] = 0  # 쉼표 표기
+                else:
+                    cell_pitch_value[idx] = note.pitch - PITCH_VALUE_BASE_MIDI + 1
+
+    for c in range(total_cells):
+        v = cell_pitch_value[c]
+        if v is None:
+            continue
+        cx = (c + 0.5) * cell_width
+        if v == 0:
+            cy = canvas_height * 0.5
+            ax.add_patch(plt.Rectangle(
+                (c * cell_width, 0), cell_width, canvas_height,
+                facecolor='lightgray', alpha=0.15, hatch='//',
+                edgecolor='none'
+            ))
+            ax.text(cx, cy, _label('쉼', 'R'),
+                    ha='center', va='center', fontsize=8, color='dimgray',
+                    fontweight='bold')
+        else:
+            # 음높이 13=상단, 1=하단
+            cy = canvas_height * (1.0 - (v - 1) / 12.0)
+            ax.add_patch(plt.Rectangle(
+                (c * cell_width, cy - canvas_height * 0.02),
+                cell_width, canvas_height * 0.04,
+                facecolor='tomato', alpha=0.7, edgecolor='darkred',
+                linewidth=0.5
+            ))
+            name = PITCH_VALUE_NAMES_KR.get(v, str(v)) if _HAS_KOREAN_FONT else str(v)
+            ax.text(cx, cy, name, ha='center', va='center',
+                    fontsize=7, fontweight='bold')
+
+    ax.set_xlim(0, canvas_width)
+    ax.set_ylim(0, canvas_height)
+    ax.invert_yaxis()
+    ax.set_xlabel(_label('시간 (X축) — 64개 비트 칸',
+                          'Time (X) — 64 beat cells'))
+    ax.set_ylabel(_label('음높이 (위: 높은 도=13, 아래: 도=1)',
+                          'Pitch (top: high C=13, bottom: C=1)'))
+    ax.set_title(_label('Baet-grid 샘플링 결과',
+                         'Baet-grid Sampling Result'))
+    if points:
+        ax.legend(loc='upper right')
+    ax.grid(False)
 
     plt.tight_layout()
     return fig

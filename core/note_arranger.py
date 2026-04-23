@@ -12,10 +12,11 @@ from core.pitch_mapper import map_y_to_pitch
 @dataclass
 class Note:
     """음표 하나를 나타내는 데이터 클래스"""
-    pitch: int         # MIDI pitch (0-127)
+    pitch: int         # MIDI pitch (0-127). 쉼표의 경우 의미 없음.
     start_beat: float  # 마디 내 시작 위치 (박 단위)
     duration: float    # 음표 길이 (박 단위, 예: 1.0 = 4분음표)
     measure: int       # 소속 마디 번호 (0부터 시작)
+    is_rest: bool = False  # True이면 쉼표(무음)
 
 
 def _get_points_in_measure(points, measure_start_x, measure_end_x):
@@ -315,8 +316,11 @@ def notes_to_text(notes):
             current_measure = note.measure
             lines.append(f"\n--- 마디 {current_measure + 1} ---")
 
-        note_name = pitch_to_note_name(note.pitch)
         dur_name = duration_names.get(note.duration, f"{note.duration}박")
-        lines.append(f"  {note_name} - {dur_name} (시작: {note.start_beat:.1f}박)")
+        if note.is_rest:
+            lines.append(f"  쉼표 - {dur_name} (시작: {note.start_beat:.1f}박)")
+        else:
+            note_name = pitch_to_note_name(note.pitch)
+            lines.append(f"  {note_name} - {dur_name} (시작: {note.start_beat:.1f}박)")
 
     return "\n".join(lines) if lines else "음표가 생성되지 않았습니다."
