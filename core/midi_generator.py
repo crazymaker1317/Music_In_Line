@@ -49,6 +49,9 @@ def generate_midi(notes, bpm=120, time_signature=(4, 4),
     beats_per_measure = time_signature[0]
     seen = {}  # (pitch, absolute_time) → duration (최대값 유지)
     for note in notes:
+        # 쉼표는 MIDI 이벤트를 생성하지 않음 (무음으로 자연스럽게 표현됨)
+        if getattr(note, "is_rest", False):
+            continue
         # 절대 시간 계산: 마디 번호 * 마디당 박 수 + 마디 내 시작 위치
         absolute_time = note.measure * beats_per_measure + note.start_beat
         # 3자리 반올림: MIDI 해상도(PPQ=960)에서 충분한 정밀도이며,
