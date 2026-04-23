@@ -115,16 +115,66 @@ def _extract_points_from_image(img):
     if len(xs) == 0:
         return []
 
-    # X좌표별로 그룹화하여 평균 Y 계산 (노이즈 감소)
+    # X좌표별로 그룹화 후, 같은 X에서 Y가 서로 멀리 떨어진 여러 클러스터가
+    # 있으면(예: 좌우 반전 C 모양처럼 선이 되돌아와 겹치는 경우) 단순 평균을
+    # 내면 선의 중간값이 나와 원래 획을 왜곡한다.
+    # → 각 X마다 Y를 인접 클러스터로 묶고, 이전 X에서 선택된 Y와 가장
+    #   가까운 클러스터를 선택해 한 점만 채택한다. 이렇게 하면 학생이
+    #   그린 "앞으로 나아가는" 획을 따라가고, 되돌아오는 획은 자연스럽게
+    #   배제된다.
     from collections import defaultdict
     x_groups = defaultdict(list)
     for x, y in zip(xs.tolist(), ys.tolist()):
         x_groups[x].append(y)
 
-    points = []
-    for x in sorted(x_groups.keys()):
-        avg_y = sum(x_groups[x]) / len(x_groups[x])
-        points.append((float(x), float(avg_y)))
+    # 픽셀 단위 클러스터 간격 임계값 (일반 브러시 두께보다 큰 간격이면
+    # 별도 획으로 간주)
+    _CLUSTER_GAP = 10
+
+    def _clusters_for_column(ys_at_x):
+        ys_sorted = sorted(ys_at_x)
+        clusters = [[ys_sorted[0]]]
+        for yv in ys_sorted[1:]:
+            if yv - clusters[-1][-1] <= _CLUSTER_GAP:
+                clusters[-1].append(yv)
+            else:
+                clusters.append([yv])
+        return [sum(c) / len(c) for c in clusters]
+
+    sorted_xs = sorted(x_groups.keys())
+    column_clusters = {x: _clusters_for_column(x_groups[x]) for x in sorted_xs}
+
+    # 전파 시작점: 클러스터가 하나뿐인 첫 X를 찾는다. 없으면 첫 X의 최상단
+    # 클러스터에서 시작 (획의 상단으로 초기 대체).
+    start_idx = 0
+    for i, x in enumerate(sorted_xs):
+        if len(column_clusters[x]) == 1:
+            start_idx = i
+            break
+
+    chosen_y: dict[int, float] = {}
+    start_x = sorted_xs[start_idx]
+    chosen_y[start_x] = column_clusters[start_x][0]
+
+    # 시작점 이후 오른쪽 방향으로 전파: 직전 Y와 가장 가까운 클러스터 선택
+    prev_y = chosen_y[start_x]
+    for i in range(start_idx + 1, len(sorted_xs)):
+        x = sorted_xs[i]
+        cl = column_clusters[x]
+        picked = min(cl, key=lambda c: abs(c - prev_y))
+        chosen_y[x] = picked
+        prev_y = picked
+
+    # 시작점 이전 왼쪽 방향으로도 동일하게 전파
+    prev_y = chosen_y[start_x]
+    for i in range(start_idx - 1, -1, -1):
+        x = sorted_xs[i]
+        cl = column_clusters[x]
+        picked = min(cl, key=lambda c: abs(c - prev_y))
+        chosen_y[x] = picked
+        prev_y = picked
+
+    points = [(float(x), float(chosen_y[x])) for x in sorted_xs]
 
     # 너무 많은 포인트면 샘플링
     if len(points) > 500:

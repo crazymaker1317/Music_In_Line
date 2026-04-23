@@ -147,19 +147,53 @@ class TestSampleBeatGrid:
 
     def test_rest_threshold_configurable(self):
         """rest_threshold를 변경하면 판정이 달라짐"""
-        # 각 셀에 정확히 3점만 들어가도록 구성 (셀 중앙 x)
+        # 각 셀에 정확히 3점만 들어가도록 구성 (셀 안의 서로 다른 x 3곳)
         cell_width = 800 / 64
         points = []
         for c in range(64):
-            cx = (c + 0.5) * cell_width
-            for _ in range(3):
-                points.append((cx, 200))
+            base = c * cell_width
+            # 셀 안의 서로 다른 3개 x값 (중복 X 제거 규칙에 걸리지 않도록)
+            for offset in (0.2, 0.5, 0.8):
+                points.append((base + offset * cell_width, 200))
         # threshold=2면 3점은 쉼표가 아님
         r_default = sample_beat_grid(points, 800, 400)
         assert any(not n.is_rest for n in r_default)
         # threshold=3이면 3점도 쉼표 처리 → 모두 쉼표
         r_strict = sample_beat_grid(points, 800, 400, rest_threshold=3)
         assert all(n.is_rest for n in r_strict)
+
+    def test_duplicate_x_in_cell_keeps_only_first(self):
+        """한 셀 안에 같은 x값 점이 여러 개 있으면 가장 먼저 등장한 점만 인식."""
+        # 첫 셀(x=0~~12.5) 안에 x=5를 5번 반복: 첫 번째는 y=50(높은음),
+        # 이후 4개는 y=350(낮은음). 중복 X가 제거되면 y=50만 남아 쉼표 처리되어야 한다.
+        # (rest_threshold=2 기본이므로 점 1개는 쉼표)
+        points = [(5.0, 50.0)] + [(5.0, 350.0) for _ in range(4)]
+        # 다른 셀에는 점을 많이 넣어 음표가 생기도록 함
+        points += [(x + 0.5, 200.0) for x in range(100, 800) if x % 2 == 0]
+        result = sample_beat_grid(points, 800, 400)
+        # 첫 셀은 점 1개(중복 제거됨)로 쉼표 처리. 따라서 첫 음표/쉼표의 pitch는
+        # 낮은음(y=350)의 평균값이 아니어야 한다 — 즉 평균 200 근처와 구분됨.
+        # 구체적으로: 첫 음표/쉼표가 is_rest여야 함.
+        assert result[0].is_rest
+
+    def test_backward_c_shape_ignored_after_reversal(self):
+        """좌→우로 그리다 방향을 바꿔 되돌아오는 점들은 무시되어야 함."""
+        # 앞부분: x=0..400, y=100 (높은음) - 정상 진행
+        forward = [(float(x), 100.0) for x in range(0, 401) for _ in range(3)]
+        # 되돌아오는 부분: x=400..0, y=300 (낮은음) - 되돌아오는 X값이므로 무시되어야 함
+        backward = [(float(x), 300.0) for x in range(400, -1, -1) for _ in range(3)]
+        points = forward + backward
+        result = sample_beat_grid(points, 800, 400, num_measures=4)
+        # 앞부분(마디 1~2)에는 높은음(y=100 → 대략 pitch 10)이 있어야 하고
+        # 낮은음(y=300 → 대략 pitch 4)은 없어야 한다.
+        pitched = [n for n in result if not n.is_rest]
+        assert len(pitched) > 0
+        # 되돌아오는 y=300의 점이 평균에 섞였다면 pitch가 중간값(7 근처)으로 내려갈 것.
+        # 실제로는 y=100만 사용되어 pitch_value_to_midi(10) == 69 근처여야 한다.
+        high_pitch_midi = pitch_value_to_midi(10)
+        assert any(n.pitch == high_pitch_midi for n in pitched), (
+            f"되돌아오는 점이 잘못 포함되어 평균이 왜곡됨. pitches={[n.pitch for n in pitched]}"
+        )
 
 
 class TestBeatGridSummary:
