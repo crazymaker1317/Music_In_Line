@@ -147,19 +147,54 @@ class TestSampleBeatGrid:
 
     def test_rest_threshold_configurable(self):
         """rest_threshold를 변경하면 판정이 달라짐"""
-        # 각 셀에 정확히 3점만 들어가도록 구성 (셀 중앙 x)
+        # 각 셀에 정확히 3점만 들어가도록 구성 (셀 내부의 서로 다른 x값 사용)
+        # 같은 x가 중복되면 한 점으로 인식되므로 서로 다른 x를 사용해야 함
         cell_width = 800 / 64
         points = []
         for c in range(64):
-            cx = (c + 0.5) * cell_width
-            for _ in range(3):
-                points.append((cx, 200))
+            base_x = c * cell_width
+            for k in range(3):
+                # 셀 내부의 서로 다른 위치(0.25, 0.5, 0.75 지점)
+                x = base_x + cell_width * (0.25 + 0.25 * k)
+                points.append((x, 200))
         # threshold=2면 3점은 쉼표가 아님
         r_default = sample_beat_grid(points, 800, 400)
         assert any(not n.is_rest for n in r_default)
         # threshold=3이면 3점도 쉼표 처리 → 모두 쉼표
         r_strict = sample_beat_grid(points, 800, 400, rest_threshold=3)
         assert all(n.is_rest for n in r_strict)
+
+    def test_same_x_within_cell_keeps_first_point(self):
+        """한 셀 안에 같은 X값을 지닌 점이 여러 개여도 가장 먼저 찍힌 점만 인식.
+
+        학생이 '@' 같은 복잡한 그림(선이 되돌아오는)을 그린 경우를 시뮬레이션.
+        같은 셀의 같은 x값에서 처음 찍힌 점의 y가 평균 계산에 사용되어야 함.
+        """
+        # 첫 번째 셀 (cell_width = 800/64 = 12.5, 첫 셀: x ∈ [0, 12.5))
+        # 같은 x=5 위치에 y가 다른 점 3개를 순서대로 찍는다.
+        # 첫 점 y=100만 인식되어야 하므로 셀에 점 1개 → 쉼표(threshold=2)
+        points = [(5, 100), (5, 300), (5, 350)]
+        result = sample_beat_grid(points, 800, 400)
+        # 점 1개로 인식되어 모든 셀이 쉼표
+        assert all(n.is_rest for n in result)
+
+    def test_same_x_within_cell_first_point_used_for_pitch(self):
+        """같은 x값이 여러 개일 때 가장 먼저 찍힌 점의 y만 평균 계산에 쓰임."""
+        # 첫 셀에 (x=2, y=80)을 먼저 찍은 뒤, 같은 x에 다른 y를 더 찍는다.
+        # threshold(=2)를 넘기 위해 셀 내부의 서로 다른 x도 함께 사용한다.
+        points = [
+            (2, 80), (2, 350), (2, 380),  # 같은 x → 첫 번째 (y=80)만 인식
+            (4, 80),
+            (6, 80),
+            (8, 80),
+        ]
+        result = sample_beat_grid(points, 800, 400)
+        first = result[0]
+        assert not first.is_rest
+        # 4개 점이 모두 y=80(상단 근처)이므로 음높이는 높은 음(>= 10).
+        # 만약 y=350,380이 평균에 포함되었다면(평균 y≈175) 음높이가
+        # 중간(7 부근)으로 크게 낮아졌을 것이다.
+        assert first.pitch >= pitch_value_to_midi(10)
 
 
 class TestBeatGridSummary:
