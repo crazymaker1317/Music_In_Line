@@ -13,6 +13,8 @@ beat_grid_sampler.py — Baet-grid 샘플링 기반 음표 배열 모듈
   그 셀의 음높이 정수값(1~13)으로 사용합니다.
 - 연속된 셀이 동일한 정수값을 가지면 하나의 음표로 병합합니다.
 - 한 셀 안의 점 개수가 임계값(기본 2) 이하이면 그 셀은 쉼표로 처리합니다.
+- 한 셀 안에 같은 X값을 지닌 점이 여러 개이면(예: '@' 같이 선이 되돌아오는
+  복잡한 그림), 가장 먼저 찍힌 점 하나만을 인식합니다.
 """
 
 from core.note_arranger import Note
@@ -83,7 +85,10 @@ def sample_beat_grid(points, canvas_width, canvas_height,
     cell_width = canvas_width / total_cells
 
     # 각 셀에 속한 점들의 Y 값을 수집
+    # 예외 처리: 한 셀 안에 같은 X값을 가진 점이 여러 개이면(학생이 '@' 같이
+    # 선이 되돌아오는 복잡한 그림을 그린 경우), 가장 먼저 찍힌 점만 인식한다.
     cell_y_values: list[list[float]] = [[] for _ in range(total_cells)]
+    cell_seen_x: list[set[float]] = [set() for _ in range(total_cells)]
     for x, y in points:
         if x < 0 or x > canvas_width:
             continue
@@ -92,6 +97,9 @@ def sample_beat_grid(points, canvas_width, canvas_height,
             cell_idx = total_cells - 1
         if cell_idx < 0:
             cell_idx = 0
+        if x in cell_seen_x[cell_idx]:
+            continue
+        cell_seen_x[cell_idx].add(x)
         cell_y_values[cell_idx].append(y)
 
     # 각 셀의 음높이 정수값 (또는 None = 쉼표) 산출
